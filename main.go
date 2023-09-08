@@ -1,17 +1,27 @@
 package main
 
 import (
-	"encoding/json"
+	"bufio"
+	"context"
 	"fmt"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	"golang.org/x/crypto/bcrypt"
+	"log"
 	"os"
 )
 
 type user struct {
-	ID                                        int
-	Name, Family                              string
-	Age                                       int
-	IsMale                                    bool
-	NationalityId, PhoneNumb, Email, Password string
+	ID            int
+	Name          string
+	Family        string
+	Age           int
+	IsMale        bool
+	NationalityId string
+	PhoneNumb     string
+	Email         string
+	Password      string
 }
 
 // Declaration variables ===>
@@ -20,12 +30,7 @@ var person = user{}
 var Users = []user{}
 var NumberOfUsers int
 var CounterID int = 0
-var ResultOfWriting bool = true
-var WantToEdit, Loggin string
-var UserStruct user
-var JsonData []byte
-var UserMap map[string]interface{}
-var SaveUserMapInArray []map[string]interface{}
+var Loggin string
 
 ///////////////////////***********//////////////////////////////////
 ///////////////////////***********//////////////////////////////////
@@ -38,21 +43,21 @@ func main() {
 	fmt.Scanln(&NumberOfUsers)
 	Users := InputUserData(NumberOfUsers)
 
-	JsonData := ConverToJson(Users)
-	fmt.Println(JsonData)
-	ResultOfWriting = SaveJsonFile(JsonData)
-	fmt.Println("\n\n", "***** Result of Writing:", ResultOfWriting)
+	SaveToMongodb(Users)
 
-	fmt.Print("\n", "Are You Want To Edit Users Data ? (if you want type 'yes' , if you're not press 'enter') :")
+	fmt.Print("\n", "Are You Want To Edit Users Data ? (if you want type 'yes' , if you're not press 'enter'): ")
 	fmt.Scanln(&wantToEdit)
 	if wantToEdit == "yes" {
-		Edit(Users)
-	}
-
-	fmt.Print("\n", "Are you Want to Loggin ? (if you wat type 'yes' , if you're not press 'enter') :")
-	fmt.Scanln(&Loggin)
-	if Loggin == "yes" {
-		Log(SaveUserMapInArray)
+		fmt.Print("Update or Delete Document ? (to update type 'up' and to delete type 'de'): ")
+		var UpOrDe string
+		fmt.Scanln(&UpOrDe)
+		if UpOrDe=="up"{
+			UpdateMongodb()
+		}else if UpOrDe=="de"{
+			DeleteMongo()
+		}else{
+			os.Exit(1)
+		}
 	}
 }
 
@@ -89,6 +94,14 @@ func InputUserData(NumberOfUsers int) []user {
 		fmt.Print("Enter Password:")
 		fmt.Scanln(&person.Password)
 
+		/////////////////////////////////////////////			 Hash User's Password
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(person.Password), bcrypt.DefaultCost)
+		if err != nil {
+			log.Fatal(err)
+		}
+		person.Password = string(hashedPassword)
+		/////////////////////////////////////////////
+
 		Users = append(Users, person)
 		if i < NumberOfUsers {
 			fmt.Println("\n****Enter Next User's Data****")
@@ -100,75 +113,109 @@ func InputUserData(NumberOfUsers int) []user {
 ///////////////////////***********//////////////////////////////////
 ///////////////////////***********//////////////////////////////////
 
-func ConverToJson([]user) string {
-	JsonData, _ = json.Marshal(Users)
-	return string(JsonData)
-}
+func SaveToMongodb(Users []user) {
 
-func SaveJsonFile(JsonData string) bool {
-
-	file, _ := os.Create("Users.json")
-
-	defer file.Close()
-
-	_, err := file.Write([]byte(JsonData))
+	/////////
+	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
+	client, err := mongo.Connect(context.Background(), clientOptions)
 	if err != nil {
-		fmt.Println("Error:", err)
-		ResultOfWriting = false
+		log.Fatal(err)
 	}
+	fmt.Println("Connecting Done !")
+	/////////
 
-	return ResultOfWriting
-}
+	for _, UserStruct := range Users {
+		UserMap := StructToMap(UserStruct)
 
-///////////////////////***********//////////////////////////////////
-///////////////////////***********//////////////////////////////////
-
-func Edit(Users []user) {
-	var fieldName string
-	var newValue string
-	var another string
-	var inputID int
-
-	for _, UserStruct = range Users {
-		UserMap = StructToMap(UserStruct)
-		SaveUserMapInArray = append(SaveUserMapInArray, UserMap)
-	}
-	fmt.Print("Enter User ID to Change:")
-	fmt.Scanln(&inputID)
-	for index, UserMap := range SaveUserMapInArray {
-		indexMap := index + 1
-		for indexMap == inputID {
-			fmt.Print("Enter Field Name Correctly (Like : Family , ...) :")
-			fmt.Scanln(&fieldName)
-			for key, _ := range UserMap {
-				if key == fieldName {
-					fmt.Print("Enter New Value:")
-					fmt.Scanln(&newValue)
-					UserMap[key] = newValue
-				}
-			}
-			fmt.Print("Are Want to Change Another Field ? (if you want type 'yes' if you're not type 'no') :")
-			fmt.Scanln(&another)
-			if another == "yes" {
-				continue
-			} else if another == "no" {
-				break
-			}
+		bsonData, err := bson.Marshal(UserMap)
+		if err != nil {
+			log.Fatal(err)
 		}
-		fmt.Print("If You Want to Edit Another User Enter it's ID :")
-		fmt.Scanln(&inputID)
+		collection := client.Database("userDB").Collection("userscollection")
+		insertResult, err := collection.InsertOne(context.TODO(), bsonData)
+		fmt.Println("insertResult :", insertResult)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
-	JsonData, _ = json.Marshal(SaveUserMapInArray)
-	file, _ := os.Create("Users.json")
+	fmt.Println("Save in Mongo Successful")
 
-	defer file.Close()
-
-	_, err := file.Write([]byte(JsonData))
+	err = client.Disconnect(context.Background())
 	if err != nil {
-		fmt.Println("Error:", err)
-		ResultOfWriting = false
+		fmt.Println("Save in Mongo Failed !")
+		log.Fatal(err)
 	}
-	fmt.Println("***** Result of Editing & Writing:", ResultOfWriting)
+}
+
+///////////////////////***********//////////////////////////////////
+///////////////////////***********//////////////////////////////////
+
+func UpdateMongodb() {
+
+	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
+	client, err := mongo.Connect(context.Background(), clientOptions)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("Connecting Done !")
+
+	var filters []FieldFilter
+	var updates []FieldUpdate
+	var set string
+	for {
+		var filter FieldFilter
+		fmt.Println("\n", "<<< FILTER >>>")
+		fmt.Print("\n", "Field Name: ")
+		fmt.Scanln(&filter.Name)
+		if filter.Name == "done" {
+			break
+		}
+		fmt.Print("Field Value: ")
+		reader := bufio.NewReader(os.Stdin)
+		filter.Value, _ = reader.ReadString('\n')
+		filters = append(filters, filter)
+
+		var update FieldUpdate
+		fmt.Println("\n", "<<< UPDATE >>>")
+		fmt.Print("\n", "Field Name: ")
+		fmt.Scanln(&update.Name)
+		fmt.Print("Please Enter '$set' or '$unset' ( '$unset' for Delete Fields ): ")
+		fmt.Scanln(&set)
+		fmt.Print("New Value: ")
+		reader = bufio.NewReader(os.Stdin)
+		update.Value, _ = reader.ReadString('\n')
+		updates = append(updates, update)
+	}
+
+	filter := bson.D{}
+	for _, fieldFilter := range filters {
+		filter = append(filter, bson.E{Key: fieldFilter.Name, Value: fieldFilter.Value})
+	}
+
+	collection := client.Database("userDB").Collection("userscollection")
+
+	updateFields := bson.D{}
+	for _, fieldUpdate := range updates {
+		updateFields = append(updateFields, bson.E{Key: fieldUpdate.Name, Value: fieldUpdate.Value})
+	}
+	update := bson.D{{set, updateFields}}
+	updateResult, err := collection.UpdateMany(context.Background(), filter, update)
+	if err != nil {
+		fmt.Println("err:", err)
+		return
+	}
+
+	if updateResult.ModifiedCount > 0 {
+		fmt.Println("Successful")
+	} else {
+		fmt.Println("Not Changed !")
+	}
+
+	err = client.Disconnect(context.TODO())
+	if err != nil {
+		fmt.Println("Save in Mongo Failed !")
+		log.Fatal(err)
+	}
 }
 
 func StructToMap(UserStruct user) map[string]interface{} {
@@ -186,36 +233,62 @@ func StructToMap(UserStruct user) map[string]interface{} {
 	return UserMap
 }
 
-///////////////////////***********//////////////////////////////////
-///////////////////////***********//////////////////////////////////
+type FieldFilter struct {
+	Name  string
+	Value interface{}
+}
 
-func Log(SaveUserMapInArray []map[string]interface{}) {
-	var emailAddress, passwd string
-	var Authentication bool
+type FieldUpdate struct {
+	Name  string
+	Value interface{}
+}
 
-	for _, UserStruct = range Users {
-		UserMap = StructToMap(UserStruct)
-		SaveUserMapInArray = append(SaveUserMapInArray, UserMap)
+func DeleteMongo() {
+	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
+	client, err := mongo.Connect(context.Background(), clientOptions)
+
+	if err != nil {
+		log.Fatal(err)
 	}
+	fmt.Println("Connecting Done !")
 
-	fmt.Print("Enter Your Email:")
-	fmt.Scanln(&emailAddress)
-
-	fmt.Print("Enter Your Password:")
-	fmt.Scanln(&passwd)
-
-OuterLoop: // Label for Outerloop to break
-	for _, UserMap := range SaveUserMapInArray {
-		i := 0
-		for _, value := range UserMap {
-			if value == emailAddress || value == passwd {
-				i++
-				if i == 2 {
-					Authentication = true
-					break OuterLoop
-				}
-			}
+	var filters []FieldFilter
+	for {
+		var filter FieldFilter
+		fmt.Println("\n", "<<< FILTER >>>")
+		fmt.Print("\n", "Field Name: ")
+		fmt.Scanln(&filter.Name)
+		if filter.Name == "done" {
+			break
 		}
+		fmt.Print("Field Value: ")
+		reader := bufio.NewReader(os.Stdin)
+		filter.Value, _ = reader.ReadString('\n')
+		filters = append(filters, filter)
 	}
-	fmt.Println("Authentication : ", Authentication)
+	
+	filter := bson.D{}
+	for _, fieldFilter := range filters {
+		filter = append(filter, bson.E{Key: fieldFilter.Name, Value: fieldFilter.Value})
+	}
+
+	collection := client.Database("userDB").Collection("userscollection")
+
+	deleteResult, err := collection.DeleteMany(context.Background(), filter)
+	if err != nil {
+		fmt.Println("err:", err)
+		return
+	}
+
+	if deleteResult.DeletedCount > 0 {
+		fmt.Println("Successful")
+	} else {
+		fmt.Println("Not Changed !")
+	}
+
+	err = client.Disconnect(context.Background())
+	if err != nil {
+		fmt.Println("Save in Mongo Failed !")
+		log.Fatal(err)
+	}
 }
